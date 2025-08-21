@@ -1,0 +1,108 @@
+
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report
+import paho.mqtt.client as mqtt
+import pandas as pd
+import numpy as np
+import time
+import pickle  #
+
+data_hum=pd.read_csv("hum.csv")
+data_temp=pd.read_csv("temp.csv");
+data_mois=pd.read_csv("moisture.csv")
+df_new=pd.DataFrame()
+df_hum = pd.DataFrame(data_hum)
+df_temp=pd.DataFrame(data_temp)
+df_mois=pd.DataFrame(data_mois)
+df_hum.drop([0,1,2],axis=0,inplace=True);
+df_temp.drop([0,1,2],axis=0,inplace=True);
+df_mois.drop([0,1,2],axis=0,inplace=True);
+df_new["temp"]=df_temp["false.3"]
+df_new["hum"]=df_hum["false.3"];
+df_new["mois"]=df_hum["false.3"];
+df_new.reset_index(inplace=True)
+
+df_new.drop(columns="index")
+df_new["temp"]=df_new["temp"].astype(float)
+df_new["hum"]=df_new["hum"].astype(float)
+df_new["mois"]=df_new["mois"].astype(float)
+# df_new.info()
+
+df_new["irrigation_needed"] = np.where((df_new["temp"] > 0) & (df_new["hum"] < 100)&(df_new["mois"]<96), 1, 0)
+
+# Split the data into features (X) and target (y)
+X = df_new[["temp", "hum","mois"]]
+y = df_new["irrigation_needed"]
+
+# Split into training and test sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Train a Random Forest Classifier
+model = RandomForestClassifier(random_state=42)
+model.fit(X_train, y_train)
+
+# Predict on the test set
+y_pred = model.predict(X_test)
+
+# Evaluate the model
+print("Accuracy:", accuracy_score(y_test, y_pred))
+print("\nClassification Report:\n", classification_report(y_test, y_pred))
+
+# Save the trained model (optional)
+import joblib
+joblib.dump(model, "irrigation_model.pkl")
+
+# Example Prediction
+example = df_new[["temp","hum","mois"]]  # Replace with your values
+prediction = model.predict(example)
+print(prediction)
+print("Irrigation Needed:" if prediction[0] == 1 else "No Irrigation Needed")
+
+
+
+BROKER = "broker.hivemq.com"
+PORT = 1883
+SUB_TOPIC = "irrigation/sensors"  # Topic to receive sensor data
+PUB_TOPIC = "irrigation/decision" # Topic to publish irrigation decisions
+
+# Load the trained ML model
+model_path = "irrigation_model.pkl"  # Replace with your model's file path
+with open(model_path, "rb") as file:
+    model = pickle.load(file)
+
+# Callback when connected to the broker
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print("Connected to HiveMQ Broker!")
+        client.subscribe(SUB_TOPIC)  # Subscribe to the sensor data topic
+        print(f"Subscribed to topic: {SUB_TOPIC}")
+    else:
+        print("Connection failed. Return code:", rc)
+
+# Callback when a message is received
+def on_message(client, userdata, msg):
+    try:
+        # Decode and parse the received sensor data
+        payload = msg.payload.decode()
+        print(f"Received message on {msg.topic}: {payload}")
+        sensor_data = eval(payload)  # Assumes payload is a dictionary-like string
+
+        # Create a DataFrame for the input
+        df_new = pd.DataFrame([sensor_data])
+        example = df_new[["temp", "hum", "mois"]]  # Replace with your model's input features
+
+        # Predict using the ML model
+        prediction = model.predict(example)
+        decision = "Irrigation Needed" if prediction[0] == 1 else "No Irrigation Needed"
+        print(f"Prediction: {decision}")
+
+        # Publish the decision
+        client.publish(PUB_TOPIC, decision)
+        print(f"Published decision: {decision} to topic: {PUB_TOPIC}")
+    except Exception as e:
+        print(f"Error processing message: {e}")
+
